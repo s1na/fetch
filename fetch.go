@@ -7,6 +7,9 @@ import (
 	"io"
 	"bufio"
 	//"errors"
+	"sync"
+
+	"github.com/reiver/go-porterstemmer"
 )
 
 func main() {
@@ -62,13 +65,22 @@ func dispatcher(corpusPath string) {
 	scanner.Split(split)
 
 	var token string
+	var wg sync.WaitGroup
 	for scanner.Scan() {
 		token = scanner.Text()
 		if len(token) > 0 {
-			fmt.Println(scanner.Text())
+			wg.Add(1)
+			go addToken(token, &wg)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		panic(err)
 	}
+	wg.Wait()
+}
+
+func addToken(token string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	token = porterstemmer.StemString(token)
+	fmt.Println(token)
 }
