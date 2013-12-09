@@ -1,16 +1,18 @@
 package main
 
 import (
-	"fmt"
-	"flag"
-	"os"
-	"io"
 	"bufio"
+	"flag"
+	"fmt"
+	"io"
+	"os"
 	//"errors"
 	"sync"
 
 	"github.com/reiver/go-porterstemmer"
 )
+
+var seperators []byte = []byte{10, 32, 44, 46}
 
 func main() {
 	var corpusPath string
@@ -26,43 +28,8 @@ func dispatcher(corpusPath string) {
 		panic(err)
 	}
 	scanner := bufio.NewScanner(io.Reader(file))
-	
-	seperators := []byte{10, 32, 44, 46}
 
-	split := func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-		var (
-			found = false
-			started = false
-			offset = 0
-		)
-		for i := 0; i < len(data); i++ {
-			found = false
-			for s := 0; s < len(seperators); s++ {
-				if data[i] == seperators[s] {
-					advance = i + 1
-					token = data[offset:i]
-					if !started {
-						offset += 1
-					}
-					found = true
-					break
-				}
-			}
-			if found {
-				if started {
-					break
-				} else {
-					continue	
-				}
-			}
-			if !started {
-				started = true
-			}
-		}
-		return
-	}	
-
-	scanner.Split(split)
+	scanner.Split(splitTokens)
 
 	var token string
 	var wg sync.WaitGroup
@@ -77,6 +44,39 @@ func dispatcher(corpusPath string) {
 		panic(err)
 	}
 	wg.Wait()
+}
+
+func splitTokens(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	var (
+		found   = false
+		started = false
+		offset  = 0
+	)
+	for i := 0; i < len(data); i++ {
+		found = false
+		for s := 0; s < len(seperators); s++ {
+			if data[i] == seperators[s] {
+				advance = i + 1
+				token = data[offset:i]
+				if !started {
+					offset += 1
+				}
+				found = true
+				break
+			}
+		}
+		if found {
+			if started {
+				break
+			} else {
+				continue
+			}
+		}
+		if !started {
+			started = true
+		}
+	}
+	return
 }
 
 func addToken(token string, wg *sync.WaitGroup) {
