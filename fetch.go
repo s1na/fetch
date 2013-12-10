@@ -15,8 +15,14 @@ import (
 
 var seperators []byte = []byte{10, 32, 44, 46}
 var stopWords map[string]bool
-var dictionary map[string]*list.List
+
+//var dictionary map[string]*list.List
 var groupLen int = 50
+
+var dictionary = struct {
+	sync.RWMutex
+	m map[string]*list.List
+}{m: make(map[string]*list.List)}
 
 func main() {
 	var corpusPath string
@@ -32,7 +38,7 @@ func dispatcher(corpusPath string) {
 		panic(err)
 	}
 	collectStopWords()
-	dictionary = make(map[string]*list.List)
+	//dictionary = make(map[string]*list.List)
 	scanner := bufio.NewScanner(io.Reader(file))
 
 	scanner.Split(splitTokens)
@@ -64,7 +70,9 @@ func addToken(token string, pos uint32, wg *sync.WaitGroup) {
 	if !ok {
 		// Stem the token
 		token = porterstemmer.StemString(token)
-		postingsList, ok := dictionary[token]
+		dictionary.RLock()
+		postingsList, ok := dictionary.m[token]
+		dictionary.RUnlock()
 		if ok {
 			lastGroup := postingsList.Back().Value.([]uint32)
 			if len(lastGroup) == groupLen {
@@ -77,10 +85,23 @@ func addToken(token string, pos uint32, wg *sync.WaitGroup) {
 			l := list.New()
 			newGroup := []uint32{pos}
 			l.PushBack(newGroup)
-			dictionary[token] = l
+			dictionary.Lock()
+			dictionary.m[token] = l
+			dictionary.Unlock()
 		}
-		e := dictionary[token].Front().Value.([]uint32)[0]
-		fmt.Println(e)
+	}
+	file, err := os.Create("res")
+	defer file.Close()
+	if err != nil {
+		panic(err)
+	}
+	writer := bufio.NewWriter(io.Writer(file))
+	writeIndex(writer)
+}
+
+func writeIndex(writer io.Writer) {
+	for k, v := range dictionary.m {
+		fmt.Println(k, v)
 	}
 }
 
