@@ -8,6 +8,7 @@ import (
 	"os"
 	//"errors"
 	"container/list"
+	"strconv"
 	"sync"
 
 	"github.com/reiver/go-porterstemmer"
@@ -103,10 +104,20 @@ func addToken(token string, pos uint32, wg *sync.WaitGroup) {
 	}
 }
 
-func writeIndex(writer io.Writer) {
+func writeIndex(writer *bufio.Writer) {
 	for k, v := range dictionary.m {
 		fmt.Println(k, v.Len(), len(v.Front().Value.([]uint32)))
+		writer.WriteString("#" + k)
+		var group []uint32
+		for el := v.Front(); el != nil; el = el.Next() {
+			group = el.Value.([]uint32)
+			for _, posting := range group {
+				val := strconv.FormatUint(uint64(posting), 10)
+				writer.WriteString("," + string(val))
+			}
+		}
 	}
+	writer.Flush()
 }
 
 func splitTokens(data []byte, atEOF bool) (advance int, token []byte, err error) {
