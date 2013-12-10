@@ -60,6 +60,14 @@ func dispatcher(corpusPath string) {
 		panic(err)
 	}
 	wg.Wait()
+
+	outFile, err := os.Create("res")
+	defer outFile.Close()
+	if err != nil {
+		panic(err)
+	}
+	writer := bufio.NewWriter(io.Writer(outFile))
+	writeIndex(writer)
 }
 
 func addToken(token string, pos uint32, wg *sync.WaitGroup) {
@@ -74,12 +82,15 @@ func addToken(token string, pos uint32, wg *sync.WaitGroup) {
 		postingsList, ok := dictionary.m[token]
 		dictionary.RUnlock()
 		if ok {
-			lastGroup := postingsList.Back().Value.([]uint32)
+			lastEl := postingsList.Back()
+			lastGroup := lastEl.Value.([]uint32)
 			if len(lastGroup) == groupLen {
 				newGroup := []uint32{pos}
 				postingsList.PushBack(newGroup)
 			} else {
 				lastGroup = append(lastGroup, pos)
+				postingsList.Remove(lastEl)
+				postingsList.PushBack(lastGroup)
 			}
 		} else {
 			l := list.New()
@@ -90,18 +101,11 @@ func addToken(token string, pos uint32, wg *sync.WaitGroup) {
 			dictionary.Unlock()
 		}
 	}
-	file, err := os.Create("res")
-	defer file.Close()
-	if err != nil {
-		panic(err)
-	}
-	writer := bufio.NewWriter(io.Writer(file))
-	writeIndex(writer)
 }
 
 func writeIndex(writer io.Writer) {
 	for k, v := range dictionary.m {
-		fmt.Println(k, v)
+		fmt.Println(k, v.Len(), len(v.Front().Value.([]uint32)))
 	}
 }
 
