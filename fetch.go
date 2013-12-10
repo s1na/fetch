@@ -16,10 +16,11 @@ import (
 var seperators []byte = []byte{10, 32, 44, 46}
 var stopWords map[string]bool
 var dictionary map[string]*list.List
+var groupLen int = 50
 
 func main() {
 	var corpusPath string
-	flag.StringVar(&corpusPath, "corpus", "data", "File path of the corpus.")
+	flag.StringVar(&corpusPath, "corpus", "data/corpus", "File path of the corpus.")
 	flag.Parse()
 	dispatcher(corpusPath)
 }
@@ -65,14 +66,21 @@ func addToken(token string, pos uint32, wg *sync.WaitGroup) {
 		token = porterstemmer.StemString(token)
 		postingsList, ok := dictionary[token]
 		if ok {
-			postingsList.PushBack(pos)
+			lastGroup := postingsList.Back().Value.([]uint32)
+			if len(lastGroup) == groupLen {
+				newGroup := []uint32{pos}
+				postingsList.PushBack(newGroup)
+			} else {
+				lastGroup = append(lastGroup, pos)
+			}
 		} else {
 			l := list.New()
-			l.PushBack(pos)
+			newGroup := []uint32{pos}
+			l.PushBack(newGroup)
 			dictionary[token] = l
 		}
-		e := dictionary[token].Front()
-		fmt.Println(e.Value)
+		e := dictionary[token].Front().Value.([]uint32)[0]
+		fmt.Println(e)
 	}
 }
 
@@ -110,7 +118,7 @@ func splitTokens(data []byte, atEOF bool) (advance int, token []byte, err error)
 }
 
 func collectStopWords() {
-	file, err := os.Open("stopwords")
+	file, err := os.Open("data/stopwords")
 	defer file.Close()
 	if err != nil {
 		panic(err)
