@@ -8,77 +8,101 @@ import (
 	"os"
 	//"errors"
 	"container/list"
+	//"runtime"
+	"sort"
 	"strconv"
 	"sync"
+	"unsafe"
 
 	"github.com/reiver/go-porterstemmer"
 )
 
-var seperators []byte = []byte{10, 32, 44, 46}
+var seperators = [6]byte{10, 32, 34, 44, 46, 59}
 var stopWords map[string]bool
-
-//var dictionary map[string]*list.List
 var groupLen int = 50
-
 var dictionary = struct {
 	sync.RWMutex
 	m map[string]*list.List
+	keys []string
 }{m: make(map[string]*list.List)}
+var notStem = map[string]bool{
+	"ION": true,
+}
+var indexMemoryLimit uint32 = 512 * 1024 * 1024
+var indexMemoryConsumed = struct {
+	sync.RWMutex
+	v uint32
+}{v: 0}
 
 func main() {
 	var corpusPath string
 	flag.StringVar(&corpusPath, "corpus", "data/corpus", "File path of the corpus.")
 	flag.Parse()
+
+	fmt.Println("Creating index.")
 	dispatcher(corpusPath)
 }
 
 func dispatcher(corpusPath string) {
+	defer func() {
+		err := recover()
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	}()
+
 	file, err := os.Open(corpusPath)
 	defer file.Close()
 	if err != nil {
 		panic(err)
 	}
-	collectStopWords()
-	//dictionary = make(map[string]*list.List)
-	scanner := bufio.NewScanner(io.Reader(file))
 
+	collectStopWords()
+	scanner := bufio.NewScanner(io.Reader(file))
 	scanner.Split(splitTokens)
 
 	var (
 		token string
 		pos   uint32 = 0
-		wg    sync.WaitGroup
 	)
 	for scanner.Scan() {
 		token = scanner.Text()
 		if len(token) > 0 {
-			wg.Add(1)
-			go addToken(token, pos, &wg)
+			addToken(token, pos)
 			pos += 1
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		panic(err)
 	}
-	wg.Wait()
 
 	outFile, err := os.Create("res")
 	defer outFile.Close()
 	if err != nil {
 		panic(err)
 	}
-	writer := bufio.NewWriter(io.Writer(outFile))
-	writeIndex(writer)
+	sort.Strings(dictionary.keys)
+	writeIndex(io.Writer(outFile))
 }
 
-func addToken(token string, pos uint32, wg *sync.WaitGroup) {
-	defer wg.Done()
+func addToken(token string, pos uint32) {
+	defer func() {
+		err := recover()
+		if err != nil {
+			fmt.Println(err)
+			fmt.Println(token)
+			os.Exit(1)
+		}
+	}()
 
 	// Check to see if token is a stop word
-	_, ok := stopWords[token]
-	if !ok {
+	var memoryConsumed uint32 = 0
+	if _, ok := stopWords[token]; !ok {
 		// Stem the token
-		token = porterstemmer.StemString(token)
+		if _, ok := notStem[token]; !ok {
+			token = porterstemmer.StemString(token)
+		}
 		dictionary.RLock()
 		postingsList, ok := dictionary.m[token]
 		dictionary.RUnlock()
@@ -100,13 +124,22 @@ func addToken(token string, pos uint32, wg *sync.WaitGroup) {
 			dictionary.Lock()
 			dictionary.m[token] = l
 			dictionary.Unlock()
+			dictionary.keys = append(dictionary.keys, token)
+			//fmt.Println(token, uint32(unsafe.Sizeof(token)))
+			memoryConsumed += uint32(unsafe.Sizeof(token))
 		}
 	}
+	indexMemoryConsumed.Lock()
+	indexMemoryConsumed.v += memoryConsumed
+	indexMemoryConsumed.Unlock()
 }
 
-func writeIndex(writer *bufio.Writer) {
-	for k, v := range dictionary.m {
-		fmt.Println(k, v.Len(), len(v.Front().Value.([]uint32)))
+func writeIndex(w io.Writer) {
+	writer := bufio.NewWriter(w)
+	var v *list.List
+	for _, k := range dictionary.keys {
+		v = dictionary.m[k]
+		//fmt.Println(k, v.Len(), len(v.Front().Value.([]uint32)))
 		writer.WriteString("#" + k)
 		var group []uint32
 		for el := v.Front(); el != nil; el = el.Next() {
