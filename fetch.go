@@ -11,26 +11,31 @@ import (
 	//"runtime"
 	"sort"
 	"strconv"
-	"sync"
+	"strings"
 	"unsafe"
 
 	"github.com/reiver/go-porterstemmer"
 )
 
+type UnrolledGroup struct {
+	next int
+	s    []uint32
+}
+
 var seperators = [6]byte{10, 32, 34, 44, 46, 59}
 var stopWords map[string]bool
-var groupLen int = 50
+var groupLen int = 10
+var groupLenFactor float32 = 1.2
+var groupLenLimit int = 256
 var dictionary = struct {
-	sync.RWMutex
-	m map[string]*list.List
+	m    map[string]*list.List
 	keys []string
 }{m: make(map[string]*list.List)}
-var notStem = map[string]bool{
-	"ION": true,
+var notStem = [3]string{
+	"ion", "ions", "iowa",
 }
 var indexMemoryLimit uint32 = 512 * 1024 * 1024
 var indexMemoryConsumed = struct {
-	sync.RWMutex
 	v uint32
 }{v: 0}
 
@@ -40,6 +45,10 @@ func main() {
 	flag.Parse()
 
 	fmt.Println("Creating index.")
+	dispatcher(corpusPath)
+}
+
+func CreateIndex(corpusPath string) {
 	dispatcher(corpusPath)
 }
 
@@ -98,66 +107,85 @@ func addToken(token string, pos uint32) {
 
 	// Check to see if token is a stop word
 	var memoryConsumed uint32 = 0
+	var size int = groupLen
+	token = strings.ToLower(token)
 	if _, ok := stopWords[token]; !ok {
-		// Stem the token
-		if _, ok := notStem[token]; !ok {
+		// Stem the token?
+		notStemFlag := false
+		for _, k := range notStem {
+			if k == token {
+				notStemFlag = true
+			}
+		}
+		if !notStemFlag {
 			token = porterstemmer.StemString(token)
 		}
-		dictionary.RLock()
+
 		postingsList, ok := dictionary.m[token]
-		dictionary.RUnlock()
 		if ok {
 			lastEl := postingsList.Back()
-			lastGroup := lastEl.Value.([]uint32)
-			if len(lastGroup) == groupLen {
-				newGroup := []uint32{pos}
-				postingsList.PushBack(newGroup)
+			lastGroup := lastEl.Value.(*UnrolledGroup)
+			if lastGroup.next == len(lastGroup.s) {
+				if len(lastGroup.s) != groupLenLimit {
+					size = int(float32(len(lastGroup.s)) * groupLenFactor)
+					if size > groupLenLimit {
+						size = groupLenLimit
+					}
+				} else {
+					size = groupLenLimit
+				}
+				newGroup := UnrolledGroup{
+					next: 1,
+					s:    make([]uint32, size),
+				}
+				newGroup.s[0] = pos
+				postingsList.PushBack(&newGroup)
 			} else {
-				lastGroup = append(lastGroup, pos)
-				postingsList.Remove(lastEl)
-				postingsList.PushBack(lastGroup)
+				lastGroup.s[lastGroup.next] = pos
+				lastGroup.next += 1
 			}
 		} else {
 			l := list.New()
-			newGroup := []uint32{pos}
-			l.PushBack(newGroup)
-			dictionary.Lock()
+			newGroup := UnrolledGroup{next: 1, s: make([]uint32, groupLen)}
+			newGroup.s[0] = pos
+			l.PushBack(&newGroup)
 			dictionary.m[token] = l
-			dictionary.Unlock()
 			dictionary.keys = append(dictionary.keys, token)
-			//fmt.Println(token, uint32(unsafe.Sizeof(token)))
 			memoryConsumed += uint32(unsafe.Sizeof(token))
 		}
 	}
-	indexMemoryConsumed.Lock()
 	indexMemoryConsumed.v += memoryConsumed
-	indexMemoryConsumed.Unlock()
 }
+
+var totalLoss uint64 = 0
 
 func writeIndex(w io.Writer) {
 	writer := bufio.NewWriter(w)
 	var v *list.List
 	for _, k := range dictionary.keys {
 		v = dictionary.m[k]
-		//fmt.Println(k, v.Len(), len(v.Front().Value.([]uint32)))
 		writer.WriteString("#" + k)
-		var group []uint32
+		var group *UnrolledGroup
 		for el := v.Front(); el != nil; el = el.Next() {
-			group = el.Value.([]uint32)
-			for _, posting := range group {
+			group = el.Value.(*UnrolledGroup)
+			totalLoss += uint64(len(group.s)) - uint64(group.next)
+			for i := 0; i < group.next; i++ {
+				posting := group.s[i]
 				val := strconv.FormatUint(uint64(posting), 10)
 				writer.WriteString("," + string(val))
 			}
 		}
 	}
+	//fmt.Println((totalLoss * 4) / (1024 * 1024))
 	writer.Flush()
 }
 
 func splitTokens(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	var (
-		found   = false
-		started = false
-		offset  = 0
+		found    = false
+		started  = false
+		complete = false
+		offset   = 0
 	)
 	for i := 0; i < len(data); i++ {
 		found = false
@@ -167,6 +195,8 @@ func splitTokens(data []byte, atEOF bool) (advance int, token []byte, err error)
 				token = data[offset:i]
 				if !started {
 					offset += 1
+				} else {
+					complete = true
 				}
 				found = true
 				break
@@ -182,6 +212,9 @@ func splitTokens(data []byte, atEOF bool) (advance int, token []byte, err error)
 		if !started {
 			started = true
 		}
+	}
+	if !complete {
+		return 0, nil, nil
 	}
 	return
 }
