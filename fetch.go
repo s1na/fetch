@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	//"errors"
 	"container/list"
-	//"runtime"
 	"sort"
-	"strconv"
+	"encoding/binary"
 	"strings"
 	"unsafe"
 
@@ -157,26 +155,25 @@ func addToken(token string, pos uint32) {
 	indexMemoryConsumed.v += memoryConsumed
 }
 
-var totalLoss uint64 = 0
-
 func writeIndex(w io.Writer) {
 	writer := bufio.NewWriter(w)
 	var v *list.List
+	out := make([]byte, 11) // Length of a uint32
+	out[0] = ','
+	buf := out[1:]
 	for _, k := range dictionary.keys {
 		v = dictionary.m[k]
 		writer.WriteString("#" + k)
 		var group *UnrolledGroup
 		for el := v.Front(); el != nil; el = el.Next() {
 			group = el.Value.(*UnrolledGroup)
-			totalLoss += uint64(len(group.s)) - uint64(group.next)
 			for i := 0; i < group.next; i++ {
 				posting := group.s[i]
-				val := strconv.FormatUint(uint64(posting), 10)
-				writer.WriteString("," + string(val))
+				binary.PutUvarint(buf, uint64(posting))
+				writer.Write(out)
 			}
 		}
 	}
-	//fmt.Println((totalLoss * 4) / (1024 * 1024))
 	writer.Flush()
 }
 
