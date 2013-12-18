@@ -8,7 +8,6 @@ import (
 	"os"
 	"container/list"
 	"sort"
-	"encoding/binary"
 	"strings"
 	"unsafe"
 
@@ -116,7 +115,7 @@ func addToken(token string, pos uint32) {
 			}
 		}
 		if !notStemFlag {
-			token = porterstemmer.StemString(token)
+			token = string(porterstemmer.StemWithoutLowerCasing([]rune(token)))
 		}
 
 		postingsList, ok := dictionary.m[token]
@@ -156,11 +155,11 @@ func addToken(token string, pos uint32) {
 }
 
 func writeIndex(w io.Writer) {
-	writer := bufio.NewWriter(w)
+	writer := bufio.NewWriterSize(w, 64 * 1024)
 	var v *list.List
-	out := make([]byte, 11) // Length of a uint32
-	out[0] = ','
-	buf := out[1:]
+	buf := make([]byte, 11) // Length of a uint32
+	buf[0] = ','
+	in := 0
 	for _, k := range dictionary.keys {
 		v = dictionary.m[k]
 		writer.WriteString("#" + k)
@@ -169,8 +168,14 @@ func writeIndex(w io.Writer) {
 			group = el.Value.(*UnrolledGroup)
 			for i := 0; i < group.next; i++ {
 				posting := group.s[i]
-				binary.PutUvarint(buf, uint64(posting))
-				writer.Write(out)
+				in = 10
+				for posting >= 10 {
+					buf[in] = byte(posting % 10 + '0')
+					in--
+					posting /= 10
+				}
+				buf[in] = byte(posting + '0')
+				writer.Write(buf)
 			}
 		}
 	}
