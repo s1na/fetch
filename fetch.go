@@ -2,12 +2,15 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"container/list"
 	"sort"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -18,23 +21,31 @@ type UnrolledGroup struct {
 	next int
 	s    []uint32
 }
-
-var seperators = [6]byte{10, 32, 34, 44, 46, 59}
-var stopWords map[string]bool
-var groupLen int = 10
-var groupLenFactor float32 = 1.2
-var groupLenLimit int = 256
 var dictionary = struct {
 	m    map[string]*list.List
 	keys []string
 }{m: make(map[string]*list.List)}
-var notStem = [3]string{
-	"ion", "ions", "iowa",
-}
-var indexMemoryLimit uint32 = 512 * 1024 * 1024
-var indexMemoryConsumed = struct {
-	v uint32
-}{v: 0}
+
+const (
+	groupLen = 10
+	groupLenFactor float32 = 1.2
+	groupLenLimit = 256
+	indexMemoryLimit = 5 * 1024 * 1024
+	indexPath = "index/"
+	writerBufSize = 64 * 1024
+	readerBufSize = 64 * 1024
+	mergeOpenFiles = 5
+)
+
+var (
+	indexMemoryConsumed = 0
+	filesQueue = list.New()
+
+	stopWords map[string]bool
+	notStem = [3]string{
+		"ion", "ions", "iowa",
+	}
+)
 
 func main() {
 	var corpusPath string
@@ -58,38 +69,51 @@ func dispatcher(corpusPath string) {
 		}
 	}()
 
+	collectStopWords()
 	file, err := os.Open(corpusPath)
 	defer file.Close()
 	if err != nil {
 		panic(err)
 	}
+	t := NewTokenizer(file)
 
-	collectStopWords()
-	scanner := bufio.NewScanner(io.Reader(file))
-	scanner.Split(splitTokens)
 
 	var (
 		token string
-		pos   uint32 = 0
+		pos   uint32 = 1
+		outPath string
 	)
-	for scanner.Scan() {
-		token = scanner.Text()
-		if len(token) > 0 {
-			addToken(token, pos)
-			pos += 1
+	for token, err = t.GetToken(); err==nil && len(token)!=0; token, err = t.GetToken() {
+		token = token
+		if indexMemoryConsumed >= indexMemoryLimit {
+			sort.Strings(dictionary.keys)
+
+			outPath = indexPath + "index."
+			outPath += strconv.Itoa(filesQueue.Len() + 1) // Prevent file from having .0 suffix
+			writeIndex(outPath)
+
+			filesQueue.PushBack(outPath)
+			clearMem()
 		}
+		addToken(token, pos)
+		pos += 1
 	}
-	if err := scanner.Err(); err != nil {
+	if err != nil && err != io.EOF {
 		panic(err)
 	}
 
-	outFile, err := os.Create("res")
-	defer outFile.Close()
-	if err != nil {
-		panic(err)
+	if indexMemoryConsumed > 0 {
+		sort.Strings(dictionary.keys)
+
+		outPath = indexPath + "index."
+		outPath += strconv.Itoa(filesQueue.Len() + 1) // Prevent file from having .0 suffix
+		writeIndex(outPath)
+
+		filesQueue.PushBack(outPath)
+		clearMem()
 	}
-	sort.Strings(dictionary.keys)
-	writeIndex(io.Writer(outFile))
+
+	mergeAll()
 }
 
 func addToken(token string, pos uint32) {
@@ -103,7 +127,7 @@ func addToken(token string, pos uint32) {
 	}()
 
 	// Check to see if token is a stop word
-	var memoryConsumed uint32 = 0
+	var memoryConsumed int = 0
 	var size int = groupLen
 	token = strings.ToLower(token)
 	if _, ok := stopWords[token]; !ok {
@@ -135,6 +159,7 @@ func addToken(token string, pos uint32) {
 					next: 1,
 					s:    make([]uint32, size),
 				}
+				memoryConsumed += int(unsafe.Sizeof(newGroup)) + size*4 + int(unsafe.Sizeof(lastEl))
 				newGroup.s[0] = pos
 				postingsList.PushBack(&newGroup)
 			} else {
@@ -148,77 +173,292 @@ func addToken(token string, pos uint32) {
 			l.PushBack(&newGroup)
 			dictionary.m[token] = l
 			dictionary.keys = append(dictionary.keys, token)
-			memoryConsumed += uint32(unsafe.Sizeof(token))
+			memoryConsumed += int(unsafe.Sizeof(l)) + int(unsafe.Sizeof(newGroup)) +
+				int(unsafe.Sizeof(token)) + groupLen*4 +
+				int(unsafe.Sizeof(token)) + 2*len(token)
 		}
 	}
-	indexMemoryConsumed.v += memoryConsumed
+	indexMemoryConsumed += memoryConsumed
 }
 
-func writeIndex(w io.Writer) {
-	writer := bufio.NewWriterSize(w, 64 * 1024)
+func writeIndex(outPath string) {
+	outFile, err := os.Create(outPath)
+	defer outFile.Close()
+	if err != nil {
+		panic(err)
+	}
+	writer := bufio.NewWriterSize(io.Writer(outFile), writerBufSize)
+
 	var v *list.List
-	buf := make([]byte, 11) // Length of a uint32
-	buf[0] = ','
-	in := 0
+	buf := make([]byte, 4) // Size of a uint32
 	for _, k := range dictionary.keys {
 		v = dictionary.m[k]
-		writer.WriteString("#" + k)
+		writer.WriteString(k + ",")
 		var group *UnrolledGroup
 		for el := v.Front(); el != nil; el = el.Next() {
 			group = el.Value.(*UnrolledGroup)
 			for i := 0; i < group.next; i++ {
 				posting := group.s[i]
-				in = 10
-				for posting >= 10 {
-					buf[in] = byte(posting % 10 + '0')
-					in--
-					posting /= 10
-				}
-				buf[in] = byte(posting + '0')
+				binary.PutUvarint(buf, uint64(posting))
 				writer.Write(buf)
 			}
 		}
+		writer.Write([]byte{0, 0, 0, 0})
 	}
 	writer.Flush()
 }
 
-func splitTokens(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	var (
-		found    = false
-		started  = false
-		complete = false
-		offset   = 0
-	)
-	for i := 0; i < len(data); i++ {
-		found = false
-		for s := 0; s < len(seperators); s++ {
-			if data[i] == seperators[s] {
-				advance = i + 1
-				token = data[offset:i]
-				if !started {
-					offset += 1
+func mergeAll() {
+	if filesQueue.Len() == 1 {
+		os.Rename(filesQueue.Remove(filesQueue.Front()).(string), indexPath + "index")
+	}
+	firstQueue := filesQueue
+	secondQueue := list.New()
+	activeQueue := 1
+	var openFiles int
+	merges := 1
+	if firstQueue.Len()/mergeOpenFiles >= 1 {
+		openFiles = mergeOpenFiles
+	} else {
+		openFiles = firstQueue.Len() % mergeOpenFiles
+	}
+	for openFiles > 0 {
+		var curFiles []string
+		var outPath string
+		if (openFiles==mergeOpenFiles) || (activeQueue==1 && secondQueue.Len()!=0) ||
+			(activeQueue==2 && firstQueue.Len()!=0) {
+			if activeQueue == 1 {
+				outPath = indexPath + "indexm." + strconv.Itoa(merges)
+			} else {
+				outPath = indexPath + "index." + strconv.Itoa(merges)
+			}
+		} else {
+			outPath = indexPath + "index"
+		}
+
+		for i := 0; i < openFiles; i++ {
+			var filePath string
+			if activeQueue == 1 {
+				firstEl := firstQueue.Front()
+				filePath = firstQueue.Remove(firstEl).(string)
+			} else {
+				firstEl := secondQueue.Front()
+				filePath = secondQueue.Remove(firstEl).(string)
+			}
+			curFiles = append(curFiles, filePath)
+		}
+
+		mergeFiles(outPath, curFiles[:])
+		merges++
+		if activeQueue == 1 {
+			secondQueue.PushBack(outPath)
+		} else {
+			firstQueue.PushBack(outPath)
+		}
+		/*for _, f := range curFiles {
+			os.Remove(f)
+		}*/
+
+		if activeQueue == 1 {
+			if firstQueue.Len() == 0 {
+				if secondQueue.Len() == 1 {
+					os.Rename(secondQueue.Remove(secondQueue.Front()).(string), "index")
+					openFiles = 0
+					break
 				} else {
-					complete = true
+					activeQueue = 2
+					merges = 1
+					if secondQueue.Len()/mergeOpenFiles > 1 {
+						openFiles = mergeOpenFiles
+					} else {
+						openFiles = secondQueue.Len() % mergeOpenFiles
+					}
 				}
-				found = true
-				break
+			} else {
+				if firstQueue.Len()/mergeOpenFiles > 1 {
+					openFiles = mergeOpenFiles
+				} else {
+					openFiles = firstQueue.Len() % mergeOpenFiles
+				}
+			}
+		} else {
+			if secondQueue.Len() == 0 {
+				if firstQueue.Len() == 1 {
+					os.Rename(firstQueue.Remove(firstQueue.Front()).(string), "index")
+					openFiles = 0
+					break
+				} else {
+					activeQueue = 1
+					merges = 1
+					if firstQueue.Len()/mergeOpenFiles > 1 {
+						openFiles = mergeOpenFiles
+					} else {
+						openFiles = firstQueue.Len() % mergeOpenFiles
+					}
+				}
+			} else {
+				if secondQueue.Len()/mergeOpenFiles > 1 {
+					openFiles = mergeOpenFiles
+				} else {
+					openFiles = secondQueue.Len() % mergeOpenFiles
+				}
 			}
 		}
-		if found {
-			if started {
-				break
-			} else {
+	}
+}
+
+func mergeFiles(outPath string, filePaths []string) {
+	outFile, err := os.Create(outPath)
+	defer outFile.Close()
+	if err != nil {
+		panic(err)
+	}
+	writer := bufio.NewWriterSize(io.Writer(outFile), writerBufSize)
+	defer writer.Flush()
+
+	readers := make([]*bufio.Reader, len(filePaths))
+	orders := make([]int, len(filePaths))
+	for in, filePath := range filePaths {
+		file, err := os.Open(filePath)
+		defer file.Close()
+		if err != nil {
+			panic(err)
+		}
+		reader := bufio.NewReaderSize(io.Reader(file), readerBufSize)
+		orders[in], _ = strconv.Atoi(filePath[strings.LastIndex(filePath, ".") + 1:])
+		readers[in] = reader
+	}
+
+	// Actually merge!
+	type Term struct {
+		token string
+		orders []int
+	}
+	stop := false
+	remainingFiles := len(readers)
+	var curTerms []*Term
+	var token string
+	var curTerm *Term
+	for in, reader := range readers {
+		token, _ = reader.ReadString(byte(','))
+		token = strings.Trim(token, ",")
+		found := false
+		for _, term := range(curTerms) {
+			if term.token == token {
+				term.orders = append(term.orders, orders[in])
+				curTerm = term
+				found = true
+			}
+		}
+		if !found {
+			var curOrders []int
+			curOrders = append(curOrders, orders[in])
+			curTerm = &Term{token: token, orders: curOrders}
+			curTerms = append(curTerms, curTerm)
+		}
+		sort.Ints(curTerm.orders)
+	}
+	for !stop {
+		// Min token
+		if len(curTerms) == 0 {
+			break
+		}
+		curTerm = curTerms[0]
+		for _, term := range curTerms {
+			if term.token < curTerm.token {
+				curTerm = term
+			}
+		}
+
+		writer.WriteString(curTerm.token + ",")
+		var buf []byte = make([]byte, 4)
+		var r byte
+		for _, order := range curTerm.orders {
+			// Make function creates array with zero values
+			// and sort brings them to the front, got to skip them
+			if order == 0 {
 				continue
 			}
+			for in, bOrder := range orders {
+				if order!=bOrder || readers[in]==nil {
+					continue
+				}
+
+				feof := false
+				listEnded := false
+				for !listEnded {
+					for byteCounter := 0; byteCounter < 4; byteCounter++ {
+						r, err = readers[in].ReadByte()
+						if err != nil {
+							if err == io.EOF {
+								readers[in] = nil
+								feof = true
+								listEnded = true
+								remainingFiles--
+								break
+							} else {
+								panic(err)
+							}
+						}
+						buf[byteCounter] = r
+					}
+					if bytes.Equal(buf, []byte{0, 0, 0, 0}) {
+						listEnded = true
+					} else {
+						if feof {
+							panic("File ended, without a final 0000.")
+						}
+						writer.Write(buf)
+					}
+				}
+				if feof {
+					break
+				}
+
+				// Next token from the same reader
+				token, _ = readers[in].ReadString(',')
+				token = strings.Trim(token, ",")
+
+				found := false
+				for _, term := range curTerms {
+					if term.token == token {
+						term.orders = append(term.orders, orders[in])
+						sort.Ints(term.orders)
+						found = true
+						break
+					}
+				}
+				if !found {
+					var curOrders []int
+					curOrders = append(curOrders, orders[in])
+					curTerms = append(curTerms, &Term{token: token, orders: curOrders})
+				}
+			}
 		}
-		if !started {
-			started = true
+		writer.Write([]byte{0, 0, 0, 0})
+
+		// Delete the current term
+		for in, term := range curTerms {
+			if term == curTerm {
+				tmp := curTerms[0]
+				curTerms[0] = curTerm
+				curTerms[in] = tmp
+
+			}
+		}
+		curTerms = curTerms[1:]
+
+		if remainingFiles == 1 {
+			stop = true
 		}
 	}
-	if !complete {
-		return 0, nil, nil
-	}
-	return
+}
+
+func clearMem() {
+	dictionary.m = nil
+	dictionary.m = make(map[string]*list.List)
+	dictionary.keys = nil
+	indexMemoryConsumed = 0
 }
 
 func collectStopWords() {
