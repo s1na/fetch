@@ -27,9 +27,11 @@ func (t *Tokenizer) GetToken() (token string, err error) {
 	started := false
 	start := 0
 	end := 0
+	var b byte
 	for !found {
 		for i := 0; i < len(t.buf); i++ {
-			if ((t.buf[i] >= 'A') && (t.buf[i] <= 'Z')) || ((t.buf[i] >= 'a') && (t.buf[i] <= 'z')) {
+			b = t.buf[i]
+			if ((b >= 'A') && (b <= 'Z')) || ((b >= 'a') && (b <= 'z')) {
 				started = true
 				if start == 0 {
 					start = i

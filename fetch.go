@@ -255,9 +255,9 @@ func mergeAll() {
 		} else {
 			firstQueue.PushBack(outPath)
 		}
-		/*for _, f := range curFiles {
+		for _, f := range curFiles {
 			os.Remove(f)
-		}*/
+		}
 
 		if activeQueue == 1 {
 			if firstQueue.Len() == 0 {
@@ -268,14 +268,14 @@ func mergeAll() {
 				} else {
 					activeQueue = 2
 					merges = 1
-					if secondQueue.Len()/mergeOpenFiles > 1 {
+					if secondQueue.Len()/mergeOpenFiles >= 1 {
 						openFiles = mergeOpenFiles
 					} else {
 						openFiles = secondQueue.Len() % mergeOpenFiles
 					}
 				}
 			} else {
-				if firstQueue.Len()/mergeOpenFiles > 1 {
+				if firstQueue.Len()/mergeOpenFiles >= 1 {
 					openFiles = mergeOpenFiles
 				} else {
 					openFiles = firstQueue.Len() % mergeOpenFiles
@@ -290,14 +290,14 @@ func mergeAll() {
 				} else {
 					activeQueue = 1
 					merges = 1
-					if firstQueue.Len()/mergeOpenFiles > 1 {
+					if firstQueue.Len()/mergeOpenFiles >= 1 {
 						openFiles = mergeOpenFiles
 					} else {
 						openFiles = firstQueue.Len() % mergeOpenFiles
 					}
 				}
 			} else {
-				if secondQueue.Len()/mergeOpenFiles > 1 {
+				if secondQueue.Len()/mergeOpenFiles >= 1 {
 					openFiles = mergeOpenFiles
 				} else {
 					openFiles = secondQueue.Len() % mergeOpenFiles
@@ -372,7 +372,9 @@ func mergeFiles(outPath string, filePaths []string) {
 
 		writer.WriteString(curTerm.token + ",")
 		var buf []byte = make([]byte, 4)
+		var postingsEnd []byte = []byte{0, 0, 0, 0}
 		var r byte
+		var byteCounter int
 		for _, order := range curTerm.orders {
 			// Make function creates array with zero values
 			// and sort brings them to the front, got to skip them
@@ -387,7 +389,7 @@ func mergeFiles(outPath string, filePaths []string) {
 				feof := false
 				listEnded := false
 				for !listEnded {
-					for byteCounter := 0; byteCounter < 4; byteCounter++ {
+					for byteCounter = 0; byteCounter < 4; byteCounter++ {
 						r, err = readers[in].ReadByte()
 						if err != nil {
 							if err == io.EOF {
@@ -402,7 +404,7 @@ func mergeFiles(outPath string, filePaths []string) {
 						}
 						buf[byteCounter] = r
 					}
-					if bytes.Equal(buf, []byte{0, 0, 0, 0}) {
+					if bytes.Equal(buf, postingsEnd) {
 						listEnded = true
 					} else {
 						if feof {
@@ -435,7 +437,7 @@ func mergeFiles(outPath string, filePaths []string) {
 				}
 			}
 		}
-		writer.Write([]byte{0, 0, 0, 0})
+		writer.Write(postingsEnd)
 
 		// Delete the current term
 		for in, term := range curTerms {
