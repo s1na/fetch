@@ -5,7 +5,7 @@ import (
 )
 
 type Tokenizer struct {
-	f *os.File
+	f   *os.File
 	buf []byte
 }
 
@@ -16,7 +16,7 @@ func NewTokenizer(f *os.File) *Tokenizer {
 
 func (t *Tokenizer) GetToken() (token string, err error) {
 	if len(t.buf) < 1 || t.buf == nil {
-		t.buf = make([]byte, 4 * 1024)
+		t.buf = make([]byte, 4*1024)
 		_, err = t.f.Read(t.buf)
 		if err != nil {
 			return
@@ -49,11 +49,11 @@ func (t *Tokenizer) GetToken() (token string, err error) {
 				}
 			}
 		}
-		if !found{
-			out := make([]byte, 4 * 1024)
+		if !found {
+			out := make([]byte, 4*1024)
 			var n int
 			n, err = t.f.Read(out)
-			if err!=nil || n==0 {
+			if err != nil || n == 0 {
 				return
 			}
 			t.buf = append(t.buf, out...)
