@@ -14,7 +14,7 @@ func NewTokenizer(f *os.File) *Tokenizer {
 	return &tokenizer
 }
 
-func (t *Tokenizer) GetToken() (token string, err error) {
+func (t *Tokenizer) GetToken() (token []byte, err error) {
 	if len(t.buf) < 1 || t.buf == nil {
 		t.buf = make([]byte, 4*1024)
 		_, err = t.f.Read(t.buf)
@@ -60,9 +60,9 @@ func (t *Tokenizer) GetToken() (token string, err error) {
 		}
 	}
 	if err != nil {
-		token = ""
+		token = nil
 	} else {
-		token = string(t.buf[start:end])
+		token = t.buf[start:end]
 	}
 	t.buf = t.buf[end:]
 	return

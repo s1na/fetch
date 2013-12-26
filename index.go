@@ -13,7 +13,7 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/reiver/go-porterstemmer"
+	"github.com/s1na/go-porterstemmer"
 )
 
 type UnrolledGroup struct {
@@ -69,12 +69,11 @@ func dispatcher(corpusPath string) {
 	t := NewTokenizer(file)
 
 	var (
-		token   string
+		token []byte
 		pos     uint32 = 1
 		outPath string
 	)
-	for token, err = t.GetToken(); err == nil && len(token) != 0; token, err = t.GetToken() {
-		token = token
+	for token, err = t.GetToken(); err == nil && token != nil && len(token) != 0; token, err = t.GetToken() {
 		if indexMemoryConsumed >= indexMemoryLimit {
 			sort.Strings(dictionary.keys)
 
@@ -106,12 +105,12 @@ func dispatcher(corpusPath string) {
 	mergeAll()
 }
 
-func addToken(token string, pos uint32) {
+func addToken(b []byte, pos uint32) {
 	defer func() {
 		err := recover()
 		if err != nil {
 			fmt.Println(err)
-			fmt.Println(token)
+			fmt.Println(string(b))
 			os.Exit(1)
 		}
 	}()
@@ -119,7 +118,7 @@ func addToken(token string, pos uint32) {
 	// Check to see if token is a stop word
 	var memoryConsumed int = 0
 	var size int = groupLen
-	token = strings.ToLower(token)
+	token := toLowerString(b)
 	if _, ok := stopWords[token]; !ok {
 		// Stem the token?
 		notStemFlag := false
@@ -129,7 +128,7 @@ func addToken(token string, pos uint32) {
 			}
 		}
 		if !notStemFlag {
-			token = string(porterstemmer.StemWithoutLowerCasing([]rune(token)))
+			token = string(porterstemmer.StemWithoutLowerCasing([]byte(token)))
 		}
 
 		postingsList, ok := dictionary.m[token]
