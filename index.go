@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"container/list"
 	"encoding/binary"
-	"fmt"
+	//"fmt"
 	"io"
 	"os"
 	"sort"
@@ -42,9 +42,6 @@ var (
 	filesQueue          = list.New()
 
 	stopWords map[string]bool
-	notStem   = [3]string{
-		"ion", "ions", "iowa",
-	}
 )
 
 func createIndex(corpusPath string) {
@@ -52,14 +49,6 @@ func createIndex(corpusPath string) {
 }
 
 func dispatcher(corpusPath string) {
-	defer func() {
-		err := recover()
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-	}()
-
 	collectStopWords()
 	file, err := os.Open(corpusPath)
 	defer file.Close()
@@ -106,30 +95,14 @@ func dispatcher(corpusPath string) {
 }
 
 func addToken(b []byte, pos uint32) {
-	defer func() {
-		err := recover()
-		if err != nil {
-			fmt.Println(err)
-			fmt.Println(string(b))
-			os.Exit(1)
-		}
-	}()
-
 	// Check to see if token is a stop word
 	var memoryConsumed int = 0
 	var size int = groupLen
-	token := toLowerString(b)
-	if _, ok := stopWords[token]; !ok {
+	b = toLowerBytes(b)
+	var token string
+	if _, ok := stopWords[string(b)]; !ok {
 		// Stem the token?
-		notStemFlag := false
-		for _, k := range notStem {
-			if k == token {
-				notStemFlag = true
-			}
-		}
-		if !notStemFlag {
-			token = string(porterstemmer.StemWithoutLowerCasing([]byte(token)))
-		}
+		token = string(porterstemmer.StemWithoutLowerCasing(b))
 
 		postingsList, ok := dictionary.m[token]
 		if ok {
