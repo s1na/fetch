@@ -1,8 +1,6 @@
 package main
 
-import (
-)
-
+import ()
 
 func toLowerBytes(s []byte) []byte {
 	for i, c := range s {
@@ -11,4 +9,9 @@ func toLowerBytes(s []byte) []byte {
 		}
 	}
 	return s
+}
+
+func isStopWord(s string) bool {
+	_, ok := stopWords[s]
+	return ok
 }

@@ -9,9 +9,35 @@ type Tokenizer struct {
 	buf []byte
 }
 
-func NewTokenizer(f *os.File) *Tokenizer {
+func NewFileTokenizer(f *os.File) *Tokenizer {
 	tokenizer := Tokenizer{f: f}
 	return &tokenizer
+}
+
+func NewDirTokenizer(dir string) []*Tokenizer {
+	dirF, err := os.Open(dir)
+	defer dirF.Close()
+	if err != nil {
+		panic(err)
+	}
+
+	fileNames, err := dirF.Readdirnames(0)
+	if err != nil {
+		panic(err)
+	}
+
+	var tokenizers []*Tokenizer
+	for _, fileName := range fileNames {
+		fileName = dir + "/" + fileName
+		file, err := os.Open(fileName)
+		if err != nil {
+			panic(err)
+		}
+
+		tokenizers = append(tokenizers, &Tokenizer{f: file})
+	}
+
+	return tokenizers
 }
 
 func (t *Tokenizer) GetToken() (token []byte, err error) {
@@ -31,9 +57,9 @@ func (t *Tokenizer) GetToken() (token []byte, err error) {
 	for !found {
 		for i := 0; i < len(t.buf); i++ {
 			b = t.buf[i]
-			if ((b >= 'A') && (b <= 'Z')) || ((b >= 'a') && (b <= 'z')) {
-				started = true
-				if start == 0 {
+			if ((b >= 'A') && (b <= 'Z')) || ((b >= 'a') && (b <= 'z')) || b == '>' || b == '<' {
+				if !started {
+					started = true
 					start = i
 				}
 			} else {

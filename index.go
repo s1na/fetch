@@ -21,6 +21,12 @@ type UnrolledGroup struct {
 	s    []uint32
 }
 
+type Posting struct {
+	doc uint32
+	tf  uint32
+	pos *list.List
+}
+
 var dictionary = struct {
 	m    map[string]*list.List
 	keys []string
@@ -33,7 +39,7 @@ const (
 	indexMemoryLimit         = 50 * 1024 * 1024
 	indexPath                = "index/"
 	writerBufSize            = 64 * 1024
-	readerBufSize            = 64 * 1024
+	readerBufSize            = 512 * 1024
 	mergeOpenFiles           = 5
 )
 
@@ -42,6 +48,11 @@ var (
 	filesQueue          = list.New()
 
 	stopWords map[string]bool
+
+	docPrefix          = []byte{'<', 'R', 'E', 'U', 'T', 'E', 'R', 'S'}
+	docId       uint32 = 0
+	docLengths  []uint32
+	uniqueTerms uint32 = 1
 )
 
 func createIndex(corpusPath string) {
@@ -55,26 +66,34 @@ func dispatcher(corpusPath string) {
 	if err != nil {
 		panic(err)
 	}
-	t := NewTokenizer(file)
+	t := NewFileTokenizer(file)
 
 	var (
-		token []byte
-		pos     uint32 = 1
+		token   []byte
 		outPath string
+		pos     uint32 = 1
 	)
 	for token, err = t.GetToken(); err == nil && token != nil && len(token) != 0; token, err = t.GetToken() {
-		if indexMemoryConsumed >= indexMemoryLimit {
-			sort.Strings(dictionary.keys)
+		if token[0] == '<' {
+			if bytes.HasPrefix(token, docPrefix) {
+				docId += 1
+				docLengths = append(docLengths, 0)
+				if indexMemoryConsumed >= indexMemoryLimit {
+					sort.Strings(dictionary.keys)
 
-			outPath = indexPath + "index."
-			outPath += strconv.Itoa(filesQueue.Len() + 1) // Prevent file from having .0 suffix
-			writeIndex(outPath)
+					outPath = indexPath + "index."
+					outPath += strconv.Itoa(filesQueue.Len() + 1) // Prevent file from having .0 suffix
+					writeIndex(outPath)
 
-			filesQueue.PushBack(outPath)
-			clearMem()
+					filesQueue.PushBack(outPath)
+					clearMem()
+				}
+			}
+		} else {
+			addToken(token, pos)
+			pos += 1
+			docLengths[docId-1]++
 		}
-		addToken(token, pos)
-		pos += 1
 	}
 	if err != nil && err != io.EOF {
 		panic(err)
@@ -91,23 +110,37 @@ func dispatcher(corpusPath string) {
 		clearMem()
 	}
 
-	mergeAll()
+	writeMetaData(indexPath + "metadata")
+	//mergeAll()
 }
 
 func addToken(b []byte, pos uint32) {
 	// Check to see if token is a stop word
 	var memoryConsumed int = 0
-	var size int = groupLen
-	b = toLowerBytes(b)
+	//var size int = groupLen
 	var token string
-	if _, ok := stopWords[string(b)]; !ok {
+	b = toLowerBytes(b)
+	token = string(b)
+	if !isStopWord(token) {
 		// Stem the token?
 		token = string(porterstemmer.StemWithoutLowerCasing(b))
 
 		postingsList, ok := dictionary.m[token]
 		if ok {
-			lastEl := postingsList.Back()
-			lastGroup := lastEl.Value.(*UnrolledGroup)
+			lastPosting := postingsList.Back().Value.(*Posting)
+			if lastPosting.doc == docId {
+				lastPosting.pos.PushBack(pos)
+				lastPosting.tf += 1
+			} else {
+				posList := list.New()
+				posList.PushBack(pos)
+				newPosting := Posting{doc: docId, tf: 1, pos: posList}
+				postingsList.PushBack(&newPosting)
+
+				memoryConsumed += int(unsafe.Sizeof(posList)) +
+					int(unsafe.Sizeof(newPosting))
+			}
+			/*lastGroup := lastEl.Value.(*UnrolledGroup)
 			if lastGroup.next == len(lastGroup.s) {
 				if len(lastGroup.s) != groupLenLimit {
 					size = int(float32(len(lastGroup.s)) * groupLenFactor)
@@ -119,23 +152,28 @@ func addToken(b []byte, pos uint32) {
 				}
 				newGroup := UnrolledGroup{
 					next: 1,
-					s:    make([]uint32, size),
+					s:    make([]*Posting, size),
 				}
 				memoryConsumed += int(unsafe.Sizeof(newGroup)) + size*4 + int(unsafe.Sizeof(lastEl))
-				newGroup.s[0] = pos
+				newGroup.s[0] = &Posting{pos: pos, doc: docId}
 				postingsList.PushBack(&newGroup)
 			} else {
-				lastGroup.s[lastGroup.next] = pos
+				lastGroup.s[lastGroup.next] = &Posting{pos: pos, doc: docId}
 				lastGroup.next += 1
-			}
+			}*/
 		} else {
 			l := list.New()
-			newGroup := UnrolledGroup{next: 1, s: make([]uint32, groupLen)}
-			newGroup.s[0] = pos
-			l.PushBack(&newGroup)
+			posList := list.New()
+			//newGroup := UnrolledGroup{next: 1, s: make([]uint32, groupLen)}
+			//newGroup.s[0] = pos
+			posList.PushBack(pos)
+			newPosting := Posting{doc: docId, tf: 1, pos: posList}
+			l.PushBack(&newPosting)
 			dictionary.m[token] = l
 			dictionary.keys = append(dictionary.keys, token)
-			memoryConsumed += int(unsafe.Sizeof(l)) + int(unsafe.Sizeof(newGroup)) +
+			uniqueTerms++
+			memoryConsumed += int(unsafe.Sizeof(l)) + int(unsafe.Sizeof(pos)) +
+				int(unsafe.Sizeof(posList)) + int(unsafe.Sizeof(newPosting)) +
 				int(unsafe.Sizeof(token)) + groupLen*4 +
 				int(unsafe.Sizeof(token)) + 2*len(token)
 		}
@@ -152,22 +190,53 @@ func writeIndex(outPath string) {
 	writer := bufio.NewWriterSize(io.Writer(outFile), writerBufSize)
 
 	var v *list.List
-	buf := make([]byte, 4) // Size of a uint32
+	dBuf := make([]byte, 4)
+	tfBuf := make([]byte, 4)
+	pBuf := make([]byte, 4)
 	for _, k := range dictionary.keys {
 		v = dictionary.m[k]
 		writer.WriteString(k + ",")
-		var group *UnrolledGroup
+		var posting *Posting
 		for el := v.Front(); el != nil; el = el.Next() {
-			group = el.Value.(*UnrolledGroup)
-			for i := 0; i < group.next; i++ {
-				posting := group.s[i]
-				binary.PutUvarint(buf, uint64(posting))
-				writer.Write(buf)
+			posting = el.Value.(*Posting)
+			binary.PutUvarint(dBuf, uint64(posting.doc))
+			writer.Write(dBuf)
+			dBuf = []byte{0, 0, 0, 0}
+			binary.PutUvarint(tfBuf, uint64(posting.tf))
+			writer.Write(tfBuf)
+			tfBuf = []byte{0, 0, 0, 0}
+			for posEl := posting.pos.Front(); posEl != nil; posEl = posEl.Next() {
+				pos := posEl.Value.(uint32)
+				binary.PutUvarint(pBuf, uint64(pos))
+				writer.Write(pBuf)
+				pBuf = []byte{0, 0, 0, 0}
 			}
 		}
 		writer.Write([]byte{0, 0, 0, 0})
 	}
 	writer.Flush()
+}
+
+func writeMetaData(outPath string) {
+	outFile, err := os.Create(outPath)
+	defer outFile.Close()
+	if err != nil {
+		panic(err)
+	}
+	var buf []byte = make([]byte, 4)
+	binary.PutUvarint(buf, uint64(uniqueTerms))
+	outFile.Write(buf)
+	buf = []byte{0, 0, 0, 0}
+	binary.PutUvarint(buf, uint64(docId))
+	outFile.Write(buf)
+	buf = []byte{0, 0, 0, 0}
+
+	var docIdInt int = int(docId)
+	for i := 0; i < docIdInt; i++ {
+		binary.PutUvarint(buf, uint64(docLengths[i]))
+		outFile.Write(buf)
+		buf = []byte{0, 0, 0, 0}
+	}
 }
 
 func mergeAll() {
@@ -333,7 +402,8 @@ func mergeFiles(outPath string, filePaths []string) {
 		}
 
 		writer.WriteString(curTerm.token + ",")
-		var buf []byte = make([]byte, 4)
+		var buf []byte = make([]byte, 8)
+		var posBuf []byte = make([]byte, 4)
 		var postingsEnd []byte = []byte{0, 0, 0, 0}
 		var r byte
 		var byteCounter int
@@ -351,7 +421,7 @@ func mergeFiles(outPath string, filePaths []string) {
 				feof := false
 				listEnded := false
 				for !listEnded {
-					for byteCounter = 0; byteCounter < 4; byteCounter++ {
+					for byteCounter = 0; byteCounter < 8; byteCounter++ {
 						r, err = readers[in].ReadByte()
 						if err != nil {
 							if err == io.EOF {
@@ -366,13 +436,40 @@ func mergeFiles(outPath string, filePaths []string) {
 						}
 						buf[byteCounter] = r
 					}
-					if bytes.Equal(buf, postingsEnd) {
-						listEnded = true
-					} else {
-						if feof {
-							panic("File ended, without a final 0000.")
+					if feof {
+						panic("File ended, without a final 0000.")
+					}
+					writer.Write(buf)
+
+					tf, n := binary.Uvarint(buf[4:8])
+					if n <= 0 {
+						panic("Failed while converting tf in merge.")
+					}
+					for i := 0; i < int(tf); i++ {
+						for j := 0; j < 4; j++ {
+							r, err = readers[in].ReadByte()
+							if err != nil {
+								if err == io.EOF {
+									readers[in] = nil
+									feof = true
+									listEnded = true
+									remainingFiles--
+									break
+								} else {
+									panic(err)
+								}
+							}
+							posBuf[byteCounter] = r
 						}
-						writer.Write(buf)
+						if bytes.Equal(posBuf, postingsEnd) {
+							listEnded = true
+							break
+						} else {
+							if feof {
+								panic("File ended, without a final 0000.")
+							}
+							writer.Write(posBuf)
+						}
 					}
 				}
 				if feof {
@@ -447,13 +544,14 @@ func collectStopWords() {
 }
 
 func readIndex(indexPath string) {
-	file, err := os.Open(indexPath)
+	file, err := os.Open("index/index.1")
 	defer file.Close()
 	if err != nil {
 		panic(err)
 	}
 	reader := bufio.NewReader(io.Reader(file))
-	var buf []byte = make([]byte, 4)
+	var buf []byte = make([]byte, 8)
+	var posBuf []byte = make([]byte, 4)
 	var r byte
 	var offset int64 = 0
 	var byteCounter int
@@ -462,28 +560,83 @@ func readIndex(indexPath string) {
 
 	term, _ = reader.ReadString(',')
 	offset += int64(len(term))
-	dict = append(dict, &DictItem{term: strings.Trim(term, ","), pos: offset})	
+	cur_term_list := list.New()
+	dict = append(dict, &Term{term: strings.Trim(term, ","), docs: cur_term_list, pos: offset})
 	for {
-		for byteCounter = 0; byteCounter < 4; byteCounter++ {
-			r, err = reader.ReadByte()
-			if err != nil {
+		end := false
+		for !end {
+			for byteCounter = 0; byteCounter < 8; byteCounter++ {
+				r, err = reader.ReadByte()
+				if err != nil {
+					if err == io.EOF {
+						end = true
+					}
+					break
+				}
+				offset++
+				buf[byteCounter] = r
+				if byteCounter == 3 {
+					if bytes.Equal(buf[:4], postingsEnd) {
+						end = true
+						break
+					}
+				}
+			}
+			if end {
 				break
 			}
-			offset++
-			buf[byteCounter] = r
-		}
-		if bytes.Equal(buf, postingsEnd) {
-			term, err = reader.ReadString(',')
-			if err != nil {
-				break
+			doc, _ := binary.Uvarint(buf[:4])
+			tf, _ := binary.Uvarint(buf[4:])
+			cur_term_list.PushBack(&Document{docId: int(doc), tf: int(tf)})
+			for i := 0; i < int(tf); i++ {
+				for j := 0; j < 4; j++ {
+					r, err = reader.ReadByte()
+					if err != nil {
+						if err == io.EOF {
+							end = true
+						}
+						break
+					}
+					offset++
+					posBuf[j] = r
+				}
 			}
-			offset += int64(len(term))
-			dict = append(dict, &DictItem{term: strings.Trim(term, ","), pos: offset})	
 		}
+		term, err = reader.ReadString(',')
+		if err != nil {
+			break
+		}
+		offset += int64(len(term))
+		cur_term_list = list.New()
+		dict = append(dict, &Term{term: strings.Trim(term, ","), docs: cur_term_list, pos: offset})
 	}
 	if err != nil {
 		if err != io.EOF {
 			panic(err)
 		}
 	}
+}
+
+func readMetaData(inPath string) {
+	inFile, err := os.Open(inPath)
+	defer inFile.Close()
+	if err != nil {
+		panic(err)
+	}
+	var buf []byte = make([]byte, 8)
+	inFile.Read(buf)
+	tmp, _ := binary.Uvarint(buf[:4])
+	totalTerms = int(tmp)
+	tmp, _ = binary.Uvarint(buf[4:])
+	totalDocs = int(tmp)
+
+	buf = make([]byte, 4)
+	docLens = make([]int, totalDocs)
+	for i := 0; i < totalDocs; i++ {
+		inFile.Read(buf)
+		tmp, _ = binary.Uvarint(buf)
+		docLens[i] = int(tmp)
+		docLenAvg += float64(tmp)
+	}
+	docLenAvg = docLenAvg / float64(totalDocs)
 }

@@ -1,18 +1,30 @@
 package main
 
 import (
+	"container/list"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 )
 
-type DictItem struct {
+type Term struct {
 	term string
-	pos	int64
+	docs *list.List
+	pos  int64
 }
 
-var dict []*DictItem
+type Document struct {
+	docId int
+	tf    int
+}
+
+var dict []*Term
+var totalDocs int = 0
+var totalDocsF float64
+var totalTerms int = 0
+var docLenAvg float64 = 0
+var docLens []int
 
 func main() {
 	var create bool
@@ -23,16 +35,19 @@ func main() {
 	flag.BoolVar(&create, "create", false, "Create the indices.")
 	flag.StringVar(&corpusPath, "corpus", "data/corpus", "File path of the corpus.")
 	flag.BoolVar(&start, "start", true, "Start the service.")
-	flag.StringVar(&indexPath, "index", "index/index", "File path of the index.")
+	flag.StringVar(&indexPath, "index", "index/index.1", "File path of the index.")
 	flag.Parse()
 
 	if create {
 		fmt.Println("Creating index.")
 		createIndex(corpusPath)
-	}
-	if start {
+	} else if start {
 		readIndex(indexPath)
-		fmt.Println(dict[0], dict[1], dict[2])
+		readMetaData("index/metadata")
+		totalDocsF = float64(totalDocs)
+		fmt.Println("A total of", totalTerms, "terms and", totalDocs, "docs read from index.")
+
+		retrieve("cocoa")
 		startService()
 	}
 }
