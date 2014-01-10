@@ -4,6 +4,8 @@ import (
 	"os"
 )
 
+var filePos int64 = -1
+
 type Tokenizer struct {
 	f   *os.File
 	buf []byte
@@ -40,11 +42,16 @@ func NewDirTokenizer(dir string) []*Tokenizer {
 	return tokenizers
 }
 
+func (t *Tokenizer) GetFilePos() int64 {
+	return filePos
+}
+
 func (t *Tokenizer) GetToken() (token []byte, err error) {
 	if len(t.buf) < 1 || t.buf == nil {
 		t.buf = make([]byte, 4*1024)
 		_, err = t.f.Read(t.buf)
 		if err != nil {
+			token = nil
 			return
 		}
 	}
@@ -57,6 +64,7 @@ func (t *Tokenizer) GetToken() (token []byte, err error) {
 	for !found {
 		for i := 0; i < len(t.buf); i++ {
 			b = t.buf[i]
+			filePos++
 			if ((b >= 'A') && (b <= 'Z')) || ((b >= 'a') && (b <= 'z')) || b == '>' || b == '<' {
 				if !started {
 					started = true
@@ -80,8 +88,10 @@ func (t *Tokenizer) GetToken() (token []byte, err error) {
 			var n int
 			n, err = t.f.Read(out)
 			if err != nil || n == 0 {
+				token = nil
 				return
 			}
+			filePos -= int64(len(t.buf))
 			t.buf = append(t.buf, out...)
 		}
 	}
@@ -90,6 +100,6 @@ func (t *Tokenizer) GetToken() (token []byte, err error) {
 	} else {
 		token = t.buf[start:end]
 	}
-	t.buf = t.buf[end:]
+	t.buf = t.buf[end+1:]
 	return
 }

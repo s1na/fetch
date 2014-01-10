@@ -27,6 +27,11 @@ type Posting struct {
 	pos *list.List
 }
 
+type IDocInfo struct {
+	length uint32
+	pos    int64
+}
+
 var dictionary = struct {
 	m    map[string]*list.List
 	keys []string
@@ -51,7 +56,7 @@ var (
 
 	docPrefix          = []byte{'<', 'R', 'E', 'U', 'T', 'E', 'R', 'S'}
 	docId       uint32 = 0
-	docLengths  []uint32
+	iDocInfos   []*IDocInfo
 	uniqueTerms uint32 = 1
 )
 
@@ -73,11 +78,16 @@ func dispatcher(corpusPath string) {
 		outPath string
 		pos     uint32 = 1
 	)
+	//counter := 0
 	for token, err = t.GetToken(); err == nil && token != nil && len(token) != 0; token, err = t.GetToken() {
+		/*if counter < 100 {
+			fmt.Println(string(token))
+			counter++
+		}*/
 		if token[0] == '<' {
 			if bytes.HasPrefix(token, docPrefix) {
 				docId += 1
-				docLengths = append(docLengths, 0)
+				iDocInfos = append(iDocInfos, &IDocInfo{length: 0, pos: t.GetFilePos() - int64(len(token))})
 				if indexMemoryConsumed >= indexMemoryLimit {
 					sort.Strings(dictionary.keys)
 
@@ -92,7 +102,7 @@ func dispatcher(corpusPath string) {
 		} else {
 			addToken(token, pos)
 			pos += 1
-			docLengths[docId-1]++
+			iDocInfos[docId-1].length++
 		}
 	}
 	if err != nil && err != io.EOF {
@@ -224,6 +234,7 @@ func writeMetaData(outPath string) {
 		panic(err)
 	}
 	var buf []byte = make([]byte, 4)
+	var posBuf []byte = make([]byte, 8)
 	binary.PutUvarint(buf, uint64(uniqueTerms))
 	outFile.Write(buf)
 	buf = []byte{0, 0, 0, 0}
@@ -233,9 +244,12 @@ func writeMetaData(outPath string) {
 
 	var docIdInt int = int(docId)
 	for i := 0; i < docIdInt; i++ {
-		binary.PutUvarint(buf, uint64(docLengths[i]))
+		binary.PutUvarint(buf, uint64(iDocInfos[i].length))
 		outFile.Write(buf)
 		buf = []byte{0, 0, 0, 0}
+		binary.PutUvarint(posBuf, uint64(iDocInfos[i].pos))
+		outFile.Write(posBuf)
+		posBuf = []byte{0, 0, 0, 0, 0, 0, 0, 0}
 	}
 }
 
@@ -624,6 +638,7 @@ func readMetaData(inPath string) {
 		panic(err)
 	}
 	var buf []byte = make([]byte, 8)
+	var posBuf []byte = make([]byte, 8)
 	inFile.Read(buf)
 	tmp, _ := binary.Uvarint(buf[:4])
 	totalTerms = int(tmp)
@@ -631,11 +646,14 @@ func readMetaData(inPath string) {
 	totalDocs = int(tmp)
 
 	buf = make([]byte, 4)
-	docLens = make([]int, totalDocs)
+	docInfos = make([]*DocInfo, totalDocs)
 	for i := 0; i < totalDocs; i++ {
 		inFile.Read(buf)
 		tmp, _ = binary.Uvarint(buf)
-		docLens[i] = int(tmp)
+		inFile.Read(posBuf)
+		pos, _ := binary.Uvarint(posBuf)
+		docInfos[i] = &DocInfo{length: int(tmp), pos: int64(pos)}
+
 		docLenAvg += float64(tmp)
 	}
 	docLenAvg = docLenAvg / float64(totalDocs)

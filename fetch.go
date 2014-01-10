@@ -19,21 +19,26 @@ type Document struct {
 	tf    int
 }
 
+type DocInfo struct {
+	length int
+	pos    int64
+}
+
+var corpusPath string
 var dict []*Term
 var totalDocs int = 0
 var totalDocsF float64
 var totalTerms int = 0
+var docInfos []*DocInfo
 var docLenAvg float64 = 0
-var docLens []int
 
 func main() {
 	var create bool
 	var start bool
-	var corpusPath string
 	var indexPath string
 
 	flag.BoolVar(&create, "create", false, "Create the indices.")
-	flag.StringVar(&corpusPath, "corpus", "data/corpus", "File path of the corpus.")
+	flag.StringVar(&corpusPath, "corpus", "data/corpus28", "File path of the corpus.")
 	flag.BoolVar(&start, "start", true, "Start the service.")
 	flag.StringVar(&indexPath, "index", "index/index.1", "File path of the index.")
 	flag.Parse()

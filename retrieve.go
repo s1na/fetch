@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 )
 
@@ -28,9 +29,10 @@ func retrieve(q string) []*Result {
 	for i := 0; i < len(qStrings); i++ {
 		qTerms[i] = getTerm(qStrings[i])
 	}
-	results := docAtATime(qTerms, 10)
+	results := docAtATime(qTerms, 3)
 	for i := 0; i < len(results); i++ {
-		fmt.Println(results[i].doc, results[i].score)
+		fmt.Println("***********", results[i].doc, results[i].score, "*************")
+		fmt.Println(getDocText(results[i].doc))
 	}
 	return results
 }
@@ -102,7 +104,7 @@ func BM25(t *Term, d *Document) float64 {
 func TFBM25(t *Term, d *Document) float64 {
 	tfF := float64(d.tf)
 	top := tfF * (BM25K1 + 1)
-	bottom := (1 - BM25B) + (BM25B * (float64(docLens[d.docId-1]) / docLenAvg))
+	bottom := (1 - BM25B) + (BM25B * (float64(docInfos[d.docId-1].length) / docLenAvg))
 	bottom = tfF + (BM25K1 * bottom)
 
 	return top / bottom
@@ -139,62 +141,14 @@ func nextDoc(t *Term, currentDoc int) *Document {
 	return nil
 }
 
-type ResultHeap []*Result
-
-func (h ResultHeap) Len() int {
-	return len(h)
-}
-
-func (h ResultHeap) Less(i, j int) bool {
-	return h[i].score < h[j].score
-}
-
-func (h ResultHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-}
-
-func (h *ResultHeap) Push(x interface{}) {
-	*h = append(*h, x.(*Result))
-}
-
-func (h *ResultHeap) Pop() interface{} {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
-}
-
-func (h *ResultHeap) PushGreater(x interface{}) {
-	old := *h
-	if old[0].score < x.(*Result).score {
-		heap.Pop(h)
-		heap.Push(h, x)
+func getDocText(docId int) string {
+	file, err := os.Open(corpusPath)
+	defer file.Close()
+	if err != nil {
+		panic(err)
 	}
-}
-
-type TermHeap []*TermNextDoc
-
-func (h TermHeap) Len() int {
-	return len(h)
-}
-
-func (h TermHeap) Less(i, j int) bool {
-	return h[i].nextDoc.docId < h[j].nextDoc.docId
-}
-
-func (h TermHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-}
-
-func (h *TermHeap) Push(x interface{}) {
-	*h = append(*h, x.(*TermNextDoc))
-}
-
-func (h *TermHeap) Pop() interface{} {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
+	buf := make([]byte, docInfos[docId].pos-docInfos[docId-1].pos)
+	file.Seek(int64(docInfos[docId-1].pos), 0)
+	file.Read(buf)
+	return string(buf)
 }
