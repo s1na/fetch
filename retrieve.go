@@ -2,7 +2,7 @@ package main
 
 import (
 	"container/heap"
-	"fmt"
+	//"fmt"
 	"math"
 	"os"
 	"strings"
@@ -30,10 +30,10 @@ func retrieve(q string) []*Result {
 		qTerms[i] = getTerm(qStrings[i])
 	}
 	results := docAtATime(qTerms, 3)
-	for i := 0; i < len(results); i++ {
+	/*for i := 0; i < len(results); i++ {
 		fmt.Println("***********", results[i].doc, results[i].score, "*************")
 		fmt.Println(getDocText(results[i].doc))
-	}
+	}*/
 	return results
 }
 

@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
+
+	"github.com/ant0ine/go-json-rest"
 )
 
 type Term struct {
@@ -22,6 +25,12 @@ type Document struct {
 type DocInfo struct {
 	length int
 	pos    int64
+}
+
+type ResultResponse struct {
+	DocId int
+	Score float64
+	Text string
 }
 
 var corpusPath string
@@ -52,16 +61,34 @@ func main() {
 		totalDocsF = float64(totalDocs)
 		fmt.Println("A total of", totalTerms, "terms and", totalDocs, "docs read from index.")
 
-		retrieve("cocoa")
 		startService()
 	}
 }
 
 func startService() {
-	http.Handle("/search", http.HandlerFunc(searchHandler))
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	handler := rest.ResourceHandler{}
+	handler.SetRoutes(
+		rest.Route{"GET", "/search/:query", SearchHandler},
+		rest.Route{"POST", "/search", SearchHandler},
+	)
+	log.Fatal(http.ListenAndServe(":8080", &handler))
 }
 
-func searchHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte(dict[0].term))
+func SearchHandler(w *rest.ResponseWriter, r *rest.Request) {
+	q := r.PathParam("query")
+	q = strings.Replace(q, ",", " ", -1)
+	fmt.Println(q)
+	results := retrieve(q)
+	
+	resultResponses := make([]*ResultResponse, len(results))
+	for i := 0; i < len(results); i++ {
+		resultResponses[i] = &ResultResponse{
+			DocId: results[i].doc,
+			Score: results[i].score,
+			Text: getDocText(results[i].doc),
+		}
+	}
+	fmt.Println(len(resultResponses))
+	fmt.Println(resultResponses)
+	w.WriteJson(&resultResponses)
 }
