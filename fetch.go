@@ -31,8 +31,16 @@ type ResultResponse struct {
 	DocId int
 	Score float64
 	Text string
+	Title string
+	Body string
 }
 
+type ErrorResponse struct {
+	Err bool
+	Msg string
+}
+
+var stopWords map[string]bool
 var corpusPath string
 var dict []*Term
 var totalDocs int = 0
@@ -52,6 +60,7 @@ func main() {
 	flag.StringVar(&indexPath, "index", "index/index.1", "File path of the index.")
 	flag.Parse()
 
+	collectStopWords()
 	if create {
 		fmt.Println("Creating index.")
 		createIndex(corpusPath)
@@ -78,17 +87,46 @@ func SearchHandler(w *rest.ResponseWriter, r *rest.Request) {
 	q := r.PathParam("query")
 	q = strings.Replace(q, ",", " ", -1)
 	fmt.Println(q)
-	results := retrieve(q)
-	
-	resultResponses := make([]*ResultResponse, len(results))
-	for i := 0; i < len(results); i++ {
-		resultResponses[i] = &ResultResponse{
-			DocId: results[i].doc,
-			Score: results[i].score,
-			Text: getDocText(results[i].doc),
-		}
+	var results []*Result
+	if r.FormValue("phrase") == "true" {
+		results = retrieve(q, true)
+	} else {
+		results = retrieve(q, false)
 	}
-	fmt.Println(len(resultResponses))
-	fmt.Println(resultResponses)
-	w.WriteJson(&resultResponses)
+	
+	if results != nil {
+		resultResponses := make([]*ResultResponse, len(results))
+		var text string
+		var title string
+		var body string
+		notNil := false
+		for i := 0; i < len(results); i++ {
+			if results[i] == nil {
+				continue
+			}
+			if results[i].doc == 0 && results[i].score == 0 {
+				continue
+			}
+			notNil = true
+			text = getDocText(results[i].doc)
+			title = getDocTitle(text)
+			body = getDocBody(text)
+			resultResponses[i] = &ResultResponse{
+				DocId: results[i].doc,
+				Score: results[i].score,
+				Text: getDocText(results[i].doc),
+				Title: title,
+				Body: body,
+			}
+		}
+		/*fmt.Println(len(resultResponses))
+		fmt.Println(resultResponses)*/
+		if notNil {
+			w.WriteJson(&resultResponses)
+		} else {
+			w.WriteJson(&ErrorResponse{Err: true, Msg: "No document found, please try another query."})
+		}
+	} else {
+		w.WriteJson(&ErrorResponse{Err: true, Msg: "No document found, please try another query."})
+	}
 }

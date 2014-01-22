@@ -52,8 +52,6 @@ var (
 	indexMemoryConsumed = 0
 	filesQueue          = list.New()
 
-	stopWords map[string]bool
-
 	docPrefix          = []byte{'<', 'R', 'E', 'U', 'T', 'E', 'R', 'S'}
 	docId       uint32 = 0
 	iDocInfos   []*IDocInfo
@@ -65,7 +63,6 @@ func createIndex(corpusPath string) {
 }
 
 func dispatcher(corpusPath string) {
-	collectStopWords()
 	file, err := os.Open(corpusPath)
 	defer file.Close()
 	if err != nil {
